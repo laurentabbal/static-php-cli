@@ -1,0 +1,91 @@
+name: Build static PHP (Windows x86_64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        description: "PHP version to compile (e.g. 8.2.25)"
+        default: "8.2.25"
+        type: string
+      prefer-pre-built:
+        description: prefer pre-built binaries (reduce build time)
+        type: boolean
+        default: true
+      debug:
+        description: enable debug logs
+        type: boolean
+        default: false
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # Extensions list (comma separated)
+  EXTENSIONS: >-
+    amqp,apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,ds,exif,ffi,fileinfo,filter,ftp,gd,iconv,igbinary,libxml,
+    mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pdo,pdo_mysql,pdo_sqlite,pdo_sqlsrv,phar,rar,redis,session,
+    shmop,simdjson,simplexml,soap,sockets,sqlite3,sqlsrv,ssh2,sysvshm,tokenizer,xml,xmlreader,xmlwriter,yac,
+    yaml,zip,zlib
+
+jobs:
+  build:
+    name: build PHP ${{ inputs.version }} on Windows x86_64 (cli only)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cache composer dependencies
+      - id: cache-composer-deps
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-dependencies
+
+      # If there's no Composer cache, install dependencies
+      - if: steps.cache-composer-deps.outputs.cache-hit != 'true'
+        run: composer update --no-dev --classmap-authoritative
+
+      - name: Generate hashed key for download cache
+        shell: bash
+        run: |
+          INPUT_HASH=$(echo "${{ runner.os }}-${{ inputs.version }}-${{ env.EXTENSIONS }}" | sha256sum | awk '{print $1}')
+          echo "INPUT_HASH=${INPUT_HASH}" >> "$GITHUB_ENV"
+
+      # Cache downloaded source
+      - id: cache-download
+        uses: actions/cache@v4
+        with:
+          path: downloads
+          key: php-${{ env.INPUT_HASH }}
+
+      # With or without debug / prebuilt
+      - if: inputs.debug == true
+        run: echo "SPC_BUILD_DEBUG=--debug" >> $env:GITHUB_ENV
+      - if: inputs.prefer-pre-built == true
+        run: echo "SPC_PRE_BUILT=--prefer-pre-built" >> $env:GITHUB_ENV
+
+      # Force CLI only
+      - run: echo "SPC_BUILD_CLI=--build-cli" >> $env:GITHUB_ENV
+
+      - run: ./bin/spc doctor
+
+      # Download sources if not cached
+      - if: steps.cache-download.outputs.cache-hit != 'true'
+        run: ./bin/spc download --with-php="${{ inputs.version }}" --for-extensions="${{ env.EXTENSIONS }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_PRE_BUILT }}
+
+      # Build CLI only
+      - run: ./bin/spc build "${{ env.EXTENSIONS }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_BUILD_CLI }}
+
+      # Upload php.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ inputs.version }}-windows-x86_64
+          path: buildroot/bin/php.exe
+
+      # Upload metadata (optionnel)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-meta
+          path: |
+            buildroot/build-extensions.json
+            buildroot/build-libraries.json
+            buildroot/license/

@@ -1,4 +1,4 @@
-name: Build static PHP (Windows x86_64)
+name: WIN x64
 
 on:
   workflow_dispatch:
@@ -8,10 +8,23 @@ on:
         description: "PHP version to compile (e.g. 8.2.25)"
         default: "8.2.25"
         type: string
+
+      extensions:
+        required: true
+        description: "Extensions to compile (comma separated)"
+        type: string
+        default: >-
+          amqp,apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,ds,exif,ffi,fileinfo,
+          filter,ftp,gd,iconv,igbinary,libxml,mbregex,mbstring,mysqli,mysqlnd,
+          opcache,openssl,pdo,pdo_mysql,pdo_sqlite,pdo_sqlsrv,phar,rar,redis,
+          session,shmop,simdjson,simplexml,soap,sockets,sqlite3,sqlsrv,ssh2,
+          sysvshm,tokenizer,xml,xmlreader,xmlwriter,yac,yaml,zip,zlib
+
       prefer-pre-built:
         description: prefer pre-built binaries (reduce build time)
         type: boolean
         default: true
+
       debug:
         description: enable debug logs
         type: boolean
@@ -19,17 +32,12 @@ on:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  # Extensions list (comma separated)
-  EXTENSIONS: >-
-    amqp,apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,ds,exif,ffi,fileinfo,filter,ftp,gd,iconv,igbinary,libxml,
-    mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pdo,pdo_mysql,pdo_sqlite,pdo_sqlsrv,phar,rar,redis,session,
-    shmop,simdjson,simplexml,soap,sockets,sqlite3,sqlsrv,ssh2,sysvshm,tokenizer,xml,xmlreader,xmlwriter,yac,
-    yaml,zip,zlib
 
 jobs:
   build:
     name: build PHP ${{ inputs.version }} on Windows x86_64 (cli only)
     runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -40,24 +48,23 @@ jobs:
           path: vendor
           key: composer-dependencies
 
-      # If there's no Composer cache, install dependencies
       - if: steps.cache-composer-deps.outputs.cache-hit != 'true'
         run: composer update --no-dev --classmap-authoritative
 
-      - name: Generate hashed key for download cache
+      - name: Generate cache key
         shell: bash
         run: |
-          INPUT_HASH=$(echo "${{ runner.os }}-${{ inputs.version }}-${{ env.EXTENSIONS }}" | sha256sum | awk '{print $1}')
+          INPUT_HASH=$(echo "${{ runner.os }}-${{ inputs.version }}-${{ inputs.extensions }}" | sha256sum | awk '{print $1}')
           echo "INPUT_HASH=${INPUT_HASH}" >> "$GITHUB_ENV"
 
-      # Cache downloaded source
+      # Cache downloaded sources
       - id: cache-download
         uses: actions/cache@v4
         with:
           path: downloads
           key: php-${{ env.INPUT_HASH }}
 
-      # With or without debug / prebuilt
+      # Flags
       - if: inputs.debug == true
         run: echo "SPC_BUILD_DEBUG=--debug" >> $env:GITHUB_ENV
       - if: inputs.prefer-pre-built == true
@@ -68,12 +75,21 @@ jobs:
 
       - run: ./bin/spc doctor
 
-      # Download sources if not cached
+      # Download PHP + deps
       - if: steps.cache-download.outputs.cache-hit != 'true'
-        run: ./bin/spc download --with-php="${{ inputs.version }}" --for-extensions="${{ env.EXTENSIONS }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_PRE_BUILT }}
+        run: >
+          ./bin/spc download
+          --with-php="${{ inputs.version }}"
+          --for-extensions="${{ inputs.extensions }}"
+          ${{ env.SPC_BUILD_DEBUG }}
+          ${{ env.SPC_PRE_BUILT }}
 
-      # Build CLI only
-      - run: ./bin/spc build "${{ env.EXTENSIONS }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_BUILD_CLI }}
+      # Build php.exe only
+      - run: >
+          ./bin/spc build
+          "${{ inputs.extensions }}"
+          ${{ env.SPC_BUILD_DEBUG }}
+          ${{ env.SPC_BUILD_CLI }}
 
       # Upload php.exe
       - uses: actions/upload-artifact@v4
@@ -81,7 +97,7 @@ jobs:
           name: php-${{ inputs.version }}-windows-x86_64
           path: buildroot/bin/php.exe
 
-      # Upload metadata (optionnel)
+      # Metadata (optionnel mais utile)
       - uses: actions/upload-artifact@v4
         with:
           name: build-meta
@@ -89,3 +105,4 @@ jobs:
             buildroot/build-extensions.json
             buildroot/build-libraries.json
             buildroot/license/
+
